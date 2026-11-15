@@ -821,8 +821,11 @@ export function installRest(routes: Route[], store: Store): void {
     const labels = Array.isArray(body.labels) ? body.labels.filter((label): label is string => typeof label === 'string') : [];
     // A label the repository does not have is a validation failure, the way GitHub answers it: 422 with
     // a message, never a silently created label.
-    const known = new Set(S(ctx).listLabels(repo).map((label) => label.name));
-    const unknown = labels.filter((label) => !known.has(label));
+    // No labels is the common case (the write workload posts bare issues): skip the Set entirely.
+    const unknown = labels.length === 0 ? [] : (() => {
+      const known = new Set(S(ctx).listLabels(repo).map((label) => label.name));
+      return labels.filter((label) => !known.has(label));
+    })();
     if (unknown.length > 0) {
       return [422, { message: 'Validation Failed', errors: unknown.map((name) => ({ resource: 'Issue', code: 'invalid', field: 'labels', value: name })) }];
     }

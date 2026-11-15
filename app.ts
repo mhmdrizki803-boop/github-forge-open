@@ -108,8 +108,15 @@ export function repoOf(ctx: Ctx): RepoRecord | undefined {
 
 /** Split '/a/:b/c' and '/a/x/c' into matched params, or null when they cannot match. */
 function matchPattern(pattern: string, path: string): Record<string, string> | null {
-  const want = pattern.split('/').filter((part, index) => part !== '' || index === 0);
-  const got = path.split('/').filter((part, index) => part !== '' || index === 0);
+  return matchSegments(splitPath(pattern), splitPath(path));
+}
+
+/** A path split once: the hot path reuses the array instead of splitting on every candidate. */
+function splitPath(value: string): string[] {
+  return value.split('/').filter((part, index) => part !== '' || index === 0);
+}
+
+function matchSegments(want: string[], got: string[]): Record<string, string> | null {
   // A trailing '*' swallows the rest of the path, slashes included, so the fixed part is what must match.
   const wildcard = want[want.length - 1] === '*';
   const fixed = wildcard ? want.length - 1 : want.length;
@@ -127,6 +134,48 @@ function matchPattern(pattern: string, path: string): Record<string, string> | n
   }
   if (wildcard) params.path = decodeURIComponent(got.slice(fixed).join('/'));
   return params;
+}
+
+/**
+ * The route table is scanned per request, so it is indexed once instead of walked: a candidate list per
+ * (method, first path segment), each pattern split once when it is registered. The 2,000-read workload
+ * pays this on every call, and a linear scan of ~90 patterns was most of its cost.
+ */
+interface IndexedRoute extends Route {
+  want: string[];
+}
+
+const routeIndex = new Map<string, IndexedRoute[]>();
+let indexedCount = 0;
+
+function candidatesFor(method: string, segments: string[]): IndexedRoute[] {
+  if (indexedCount !== routes.length) reindex();
+  const first = segments[0] ?? '';
+  return routeIndex.get(`${method}\u0000${first}`) ?? EMPTY;
+}
+
+const EMPTY: IndexedRoute[] = [];
+
+function reindex(): void {
+  routeIndex.clear();
+  for (const route of routes) {
+    const want = splitPath(route.pattern);
+    const indexed: IndexedRoute = { ...route, want };
+    // A pattern whose first segment is a parameter answers for every first segment.
+    const key = want[0] !== undefined && want[0].startsWith(':') ? '*' : (want[0] ?? '');
+    const bucket = routeIndex.get(`${route.method}\u0000${key}`);
+    const entry = `${route.method}\u0000${key}`;
+    if (bucket === undefined) routeIndex.set(entry, [indexed]);
+    else bucket.push(indexed);
+  }
+  indexedCount = routes.length;
+}
+
+/** Every bucket a (method, first segment) can land in: its own, plus the parameterised wildcard one. */
+function lookupBuckets(method: string, segments: string[]): IndexedRoute[] {
+  if (indexedCount !== routes.length) reindex();
+  const first = segments[0] ?? '';
+  return [...(routeIndex.get(`${method}\u0000${first}`) ?? []), ...(routeIndex.get(`${method}\u0000*`) ?? [])];
 }
 
 /** The routes every other step extends. Order matters: the first match wins. */
@@ -228,9 +277,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, store: Store): 
 
   // HEAD is GET without the body; sendJson/sendRaw already drop it for HEAD requests.
   const lookup = method === 'HEAD' ? 'GET' : method;
-  for (const candidate of routes) {
-    if (candidate.method !== lookup) continue;
-    const params = matchPattern(candidate.pattern, path);
+  const partSegments = splitPath(path);
+  for (const candidate of lookupBuckets(lookup, partSegments)) {
+    const params = matchSegments(candidate.want, partSegments);
     if (params === null) continue;
     ctx.params = params;
     let reply: Reply;
