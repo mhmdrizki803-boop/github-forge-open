@@ -82,6 +82,13 @@ const asObject = (ctx: Ctx): Record<string, unknown> =>
 
 const asString = (value: unknown): string | undefined => (typeof value === 'string' ? value : undefined);
 
+/** A query parameter as a bounded whole number: `fallback` when it is absent or not a number. */
+function clampInt(raw: string | null, fallback: number, low: number, high: number): number {
+  const n = raw === null ? Number.NaN : Number.parseInt(raw, 10);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(high, Math.max(low, n));
+}
+
 /** The commit's author identity: the caller, spelled the way store.ts spells users. */
 function authorFor(ctx: Ctx): { name: string; email: string } {
   const user = ctx.user;
@@ -528,7 +535,25 @@ export function installRest(routes: Route[], store: Store): void {
   });
 
   // GET /api/v3/user/repos — the caller's repos.
-  reg('GET', '/api/v3/user/repos', (ctx) => [200, S(ctx).listRepos(ctx.login).map(repoJson)]);
+  // GET /api/v3/user/repos — paginated the way GitHub pages it: `?per_page=&page=`, a `link` header
+  // whose `rel="next"` the client follows until it stops.
+  reg('GET', '/api/v3/user/repos', (ctx) => {
+    const all = S(ctx).listRepos(ctx.login);
+    const perPage = clampInt(ctx.query.get('per_page'), 30, 1, 100);
+    const page = clampInt(ctx.query.get('page'), 1, 1, 10_000);
+    const start = (page - 1) * perPage;
+    const slice = all.slice(start, start + perPage);
+    const headers: Record<string, string> = {};
+    const links: string[] = [];
+    const base = `${ctx.base}/api/v3/user/repos?per_page=${perPage}`;
+    if (start + perPage < all.length) links.push(`<${base}&page=${page + 1}>; rel="next"`);
+    if (page > 1) links.push(`<${base}&page=${page - 1}>; rel="prev"`);
+    if (page > 1) links.push(`<${base}&page=1>; rel="first"`);
+    const lastPage = Math.max(1, Math.ceil(all.length / perPage));
+    if (page < lastPage) links.push(`<${base}&page=${lastPage}>; rel="last"`);
+    if (links.length > 0) headers.link = links.join(', ');
+    return [200, slice.map(repoJson), headers];
+  });
 
   // GET /api/v3/repos/:owner/:repo
   reg('GET', '/api/v3/repos/:owner/:repo', (ctx) => {
@@ -794,6 +819,13 @@ export function installRest(routes: Route[], store: Store): void {
     const title = asString(body.title);
     if (title === undefined) return [422, { message: 'Validation Failed' }];
     const labels = Array.isArray(body.labels) ? body.labels.filter((label): label is string => typeof label === 'string') : [];
+    // A label the repository does not have is a validation failure, the way GitHub answers it: 422 with
+    // a message, never a silently created label.
+    const known = new Set(S(ctx).listLabels(repo).map((label) => label.name));
+    const unknown = labels.filter((label) => !known.has(label));
+    if (unknown.length > 0) {
+      return [422, { message: 'Validation Failed', errors: unknown.map((name) => ({ resource: 'Issue', code: 'invalid', field: 'labels', value: name })) }];
+    }
     const issue = S(ctx).createIssue(repo, {
       title,
       body: asString(body.body) ?? '',
