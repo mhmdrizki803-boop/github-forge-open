@@ -325,6 +325,7 @@ export class Store {
   }
 
   deleteRepo(fullOrOwner: string, name?: string): boolean {
+    this.writes += 1;
     const key = name === undefined ? fullOrOwner : `${fullOrOwner}/${name}`;
     return this.repos.delete(key);
   }
@@ -369,7 +370,11 @@ export class Store {
   // ---------------------------------------------------------------- refs
 
   /** Point `ref` at `oid` (creating it if needed) and bump the push time. */
+  /** Every write bumps this: a cached reply keyed on it is never served after any change. */
+  writes = 0;
+
   setRef(repo: RepoRecord | string, ref: string, oid: string): void {
+    this.writes += 1;
     const data = this.data(repo);
     if (data === undefined) throw new Error(`no such repo: ${String(repo)}`);
     data.refs.set(ref, oid);
@@ -478,6 +483,7 @@ export class Store {
     repo: RepoRecord | string,
     input: { title: string; body?: string | null; user: string; labels?: string[]; state?: 'open' | 'closed' },
   ): IssueRecord {
+    this.writes += 1;
     const data = this.data(repo);
     if (data === undefined) throw new Error(`no such repo: ${String(repo)}`);
     const record = typeof repo === 'string' ? this.getRepo(repo) : repo;
@@ -533,6 +539,7 @@ export class Store {
     number: number,
     patch: { title?: string; body?: string | null; state?: 'open' | 'closed'; labels?: string[]; state_reason?: string | null },
   ): IssueRecord | undefined {
+    this.writes += 1;
     const data = this.data(repo);
     const issue = data?.issues.get(number);
     if (data === undefined || issue === undefined) return undefined;
@@ -560,6 +567,7 @@ export class Store {
     repo: RepoRecord | string,
     input: { title: string; body?: string | null; user: string; head: { ref: string; sha: string }; base?: { ref: string; sha: string } },
   ): PullRecord {
+    this.writes += 1;
     const data = this.data(repo);
     if (data === undefined) throw new Error(`no such repo: ${String(repo)}`);
     const record = typeof repo === 'string' ? this.getRepo(repo) : repo;
@@ -627,6 +635,7 @@ export class Store {
 
   /** Merge a pull: close it, record the merge, and point the base branch at `mergeCommitSha`. */
   mergePull(repo: RepoRecord | string, number: number, mergeCommitSha: string): PullRecord | undefined {
+    this.writes += 1;
     const data = this.data(repo);
     const pull = data?.pulls.get(number);
     if (data === undefined || pull === undefined) return undefined;
@@ -671,6 +680,7 @@ export class Store {
 
   /** A comment on an issue or a pull (they share numbering in GitHub's issue-comment space). */
   createComment(repo: RepoRecord | string, issueNumber: number, body: string, user: string): CommentRecord | undefined {
+    this.writes += 1;
     const data = this.data(repo);
     if (data === undefined) return undefined;
     const issue = data.issues.get(issueNumber);
