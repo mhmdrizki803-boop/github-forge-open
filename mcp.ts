@@ -48,6 +48,19 @@ const obj = (properties: Record<string, unknown>, required: string[]): Record<st
  */
 const TOOLS: ToolDef[] = [
   {
+    name: 'create_repo',
+    description: 'Create a repository for the caller and return it.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Repository name.' },
+        description: { type: 'string', description: 'One line about the repository.' },
+        private: { type: 'boolean', description: 'True for a private repository.' },
+      },
+      required: ['name'],
+    },
+  },
+  {
     name: 'create_issue',
     description: 'Open an issue on a repository and return the created issue.',
     inputSchema: obj(
@@ -97,7 +110,7 @@ const TOOLS: ToolDef[] = [
     ),
   },
   {
-    name: 'get_repository',
+    name: 'get_repo',
     description: 'Read one repository: its name, owner, description, visibility and branches.',
     inputSchema: obj({}, []),
   },
@@ -150,6 +163,17 @@ interface ToolRun {
 
 function runTool(store: Store, login: string, name: string, args: Record<string, any>): ToolRun {
   switch (name) {
+    case 'create_repo': {
+      const name = asText(args.name);
+      if (name === undefined || name.trim() === '') badArgs('Missing required argument: name');
+      const ownerLogin = login === '' ? 'viewer' : login;
+      const made = store.createRepo(ownerLogin, name, {
+        description: asText(args.description) ?? '',
+        private: args.private === true,
+      });
+      if (made === null) badArgs(`Repository creation failed: ${ownerLogin}/${name} already exists`);
+      return { result: { type: 'Repository', name: made.name, full_name: made.full_name, owner: ownerLogin, private: made.private, default_branch: made.default_branch, description: made.description } };
+    }
     case 'create_issue': {
       const repo = repoFor(store, args);
       const title = asText(args.title);
