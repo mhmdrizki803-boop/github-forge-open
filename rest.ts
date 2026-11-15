@@ -522,7 +522,7 @@ export function installRest(routes: Route[], store: Store): void {
     const body = asObject(ctx);
     const name = asString(body.name);
     if (name === undefined || name === '' || /[^A-Za-z0-9._-]/.test(name)) {
-      return [422, { message: 'Repository creation failed.' }];
+      return [422, { message: 'Repository creation failed. name already exists on this account' }];
     }
     const login = ctx.login;
     if (login === undefined) return [401, { message: 'Requires authentication' }];
@@ -530,7 +530,7 @@ export function installRest(routes: Route[], store: Store): void {
       description: asString(body.description) ?? null,
       private: body.private === true,
     });
-    if (created === null) return [422, { message: 'Repository creation failed.' }];
+    if (created === null) return [422, { message: 'Repository creation failed. name already exists on this account' }];
     return [201, repoJson(created), { location: created.url }];
   });
 
