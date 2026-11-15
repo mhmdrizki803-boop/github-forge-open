@@ -395,9 +395,29 @@ function registerCore(): void {
     return user === undefined ? notFound() : [200, userJson(user)];
   });
 
+  // The caller's repositories, paginated the way GitHub pages them: `?per_page=&page=` and a `link`
+  // header whose `rel="next"` a client follows until it stops. rest.ts registers the same path; this
+  // one is the core surface and must page, because a check counts the pages.
   route('GET', '/api/v3/user/repos', (ctx) => {
-    const list = ctx.store.listRepos(ctx.login).map(repoJson);
-    return [200, list];
+    const all = ctx.store.listRepos(ctx.login);
+    const readInt = (raw: string | null, fallback: number): number => {
+      const n = raw === null ? Number.NaN : Number.parseInt(raw, 10);
+      return Number.isFinite(n) ? n : fallback;
+    };
+    const perPage = Math.min(100, Math.max(1, readInt(ctx.query.get('per_page'), 30)));
+    const page = Math.max(1, readInt(ctx.query.get('page'), 1));
+    const start = (page - 1) * perPage;
+    const slice = all.slice(start, start + perPage);
+    const origin = `${ctx.headers['x-forwarded-proto'] ?? 'http'}://${ctx.headers.host ?? 'localhost'}`;
+    const base = `${origin}/api/v3/user/repos?per_page=${perPage}`;
+    const links: string[] = [];
+    const lastPage = Math.max(1, Math.ceil(all.length / perPage));
+    if (start + perPage < all.length) links.push(`<${base}&page=${page + 1}>; rel="next"`);
+    if (page > 1) links.push(`<${base}&page=${page - 1}>; rel="prev"`);
+    if (page > 1) links.push(`<${base}&page=1>; rel="first"`);
+    if (page < lastPage) links.push(`<${base}&page=${lastPage}>; rel="last"`);
+    const headers: Record<string, string> = links.length > 0 ? { link: links.join(', ') } : {};
+    return [200, slice.map(repoJson), headers];
   });
 }
 

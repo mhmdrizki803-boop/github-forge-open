@@ -237,6 +237,7 @@ function runTool(store: Store, login: string, name: string, args: Record<string,
       return { result: { merged: true, sha: headSha, message: 'Pull Request successfully merged' } };
     }
 
+    case 'get_repo':
     case 'get_repository': {
       const repo = repoFor(store, args);
       const branches = store.listRefs(repo, 'refs/heads/').map(([ref, oid]) => ({ name: ref.slice('refs/heads/'.length), commit: { sha: oid } }));
