@@ -100,9 +100,9 @@ function readCommands(buf: Buffer): {
     const data = buf.subarray(at + 4, at + length);
     const text = data.toString('utf8');
     const nul = text.indexOf('\0');
-    const head = nul === -1 ? text : text.slice(0, nul);
+    const head = (nul === -1 ? text : text.slice(0, nul)).replace(/\r?\n$/, '');
     const caps = nul === -1 ? '' : text.slice(nul + 1);
-    const [old, next, ref] = head.split(' ');
+    const [old, next, ref] = head.trim().split(' ');
     if (old !== undefined && next !== undefined && ref !== undefined) commands.push({ old, next, ref, caps });
     at += length;
   }
@@ -489,7 +489,12 @@ export function handleUploadPack(store: Store, repo: RepoRecord | string, body: 
       const refs = refList(store, record);
       const unborn = store.getRef(record, `refs/heads/${record.default_branch}`) === undefined;
       const symref = `symref=HEAD:refs/heads/${record.default_branch}`;
-      if (unborn) {
+      // HEAD is reported only when no ref-prefix narrows the answer: a client asking for refs/heads/
+      // or refs/tags/ wants that namespace, and HEAD is in neither.
+      const prefixesKnown = request.some((line) => line.startsWith('ref-prefix '));
+      if (prefixesKnown) {
+        // no HEAD line
+      } else if (unborn) {
         // An unborn HEAD names its branch but has no oid to report.
         if (flags.has('unborn') || flags.has('symrefs')) {
           parts.push(Buffer.from(pktLine(flags.has('symrefs') ? `unborn HEAD ${symref}\n` : 'unborn HEAD\n'), 'utf8'));
@@ -503,9 +508,15 @@ export function handleUploadPack(store: Store, repo: RepoRecord | string, body: 
       const prefixes = request
         .filter((line) => line.startsWith('ref-prefix '))
         .map((line) => line.slice('ref-prefix '.length));
+      const wantPeel = flags.has('peel');
       for (const [ref, oid] of refs) {
+        // A ref-prefix asks for that namespace alone: HEAD is not one of refs/heads/ or refs/tags/.
         if (prefixes.length > 0 && !prefixes.some((prefix) => ref.startsWith(prefix))) continue;
-        parts.push(Buffer.from(pktLine(`${oid} ${ref}\n`), 'utf8'));
+        // v2 carries a tag's peeled commit as a `peeled:<oid>` attribute on the ref's own line; the
+        // `^{}` row is the v0 advertisement's form and a v2 client never reads it.
+        const peeled = wantPeel ? peelToCommit(store, record, oid) : null;
+        const attrs = peeled === null ? '' : ` peeled:${peeled}`;
+        parts.push(Buffer.from(pktLine(`${oid} ${ref}${attrs}\n`), 'utf8'));
       }
       parts.push(Buffer.from('0000', 'ascii'));
       return Buffer.concat(parts);
@@ -550,6 +561,22 @@ export function handleUploadPack(store: Store, repo: RepoRecord | string, body: 
   parts.push(Buffer.from(pktLine('NAK\n'), 'utf8'));
   parts.push(Buffer.from('0000', 'ascii'));
   return Buffer.concat(parts);
+}
+
+/** The commit a tag object finally names, or null when the ref is not an annotated tag. */
+function peelToCommit(store: Store, repo: RepoRecord, oid: string): string | null {
+  let at = oid;
+  for (let hop = 0; hop < 8; hop += 1) {
+    const object = store.getObject(repo, at);
+    if (object === undefined) return null;
+    if (object.type === 'commit') return hop === 0 ? null : at;
+    if (object.type !== 'tag') return null;
+    const text = object.body.toString('utf8');
+    const line = text.split('\n').find((row) => row.startsWith('object '));
+    if (line === undefined) return null;
+    at = line.slice('object '.length).trim();
+  }
+  return null;
 }
 
 /**
@@ -599,8 +626,12 @@ function deepenOf(request: string[]): number {
  * tree and the blobs it names, never the 199 commits behind it.
  */
 function collectObjects(store: Store, repo: RepoRecord, wants: string[], haves: string[], depth = 0): string[] {
+  // A shallow deepen sends the tip as both a want and a have: what it already holds is the shallow
+  // history under that tip, so a have contributes its closure only as deep as the client asked for.
+  // Excluding the tip's whole history would drop the parent the deepen is asking for.
   const haveSet = new Set<string>();
-  for (const have of haves) for (const oid of reachable(store, repo, have, depth)) haveSet.add(oid);
+  const haveDepth = depth > 0 ? Math.max(0, depth - 1) : 0;
+  for (const have of haves) for (const oid of reachable(store, repo, have, haveDepth)) haveSet.add(oid);
   const out: string[] = [];
   const seen = new Set<string>();
   for (const want of wants) {
@@ -690,7 +721,11 @@ export function handleReceivePack(store: Store, repo: RepoRecord | string, body:
 
   for (const item of accepted) {
     if (!item.ok) {
-      report.push(`ng ${item.command.ref} ${item.reason ?? 'failed'}`);
+      // The status report's failure line is `ng <ref> <reason>` and a client tokenises it as two words
+      // after `ng`: a reason with spaces breaks its parser, so the reason is one word.
+      const words = String(item.reason ?? '').trim().split(/\s+/).filter((w) => w !== '');
+      // The client needs a reason token: `ng <ref>` alone is a protocol error for it.
+      report.push(`ng ${item.command.ref} ${words[0] ?? 'rejected'}`);
       continue;
     }
     if (item.command.next === ZERO_OID) store.deleteRef(record, item.command.ref);

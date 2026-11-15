@@ -585,7 +585,8 @@ const RESOLVERS: Record<string, Record<string, Resolver>> = {
       const name = String(args.name ?? '');
       const repo = ec.store.getRepo(owner, name);
       if (repo === undefined) {
-        throw new Error(`Could not resolve to a Repository with the name '${owner}/${name}'.`);
+        // An unknown repository is a null result, not a failed document: gh's probe reads null and moves on.
+        return null;
       }
       return gnode('Repository', repo);
     },
@@ -685,7 +686,11 @@ const RESOLVERS: Record<string, Record<string, Resolver>> = {
       if (found === undefined) throw new Error('Could not resolve to an Issue with that id.');
       const comment = ec.store.createComment(found.repo, found.rec.number, String(input.body ?? ''), ec.login);
       if (comment === undefined) throw new Error('Could not add the comment.');
-      return { issueComment: gnode('IssueComment', comment) };
+      return {
+        issueComment: gnode('IssueComment', comment),
+        // gh reads the edge form: a payload without it answers undefined for commentEdge.node.
+        commentEdge: { node: gnode('IssueComment', comment), cursor: Buffer.from(`c${comment.id}`).toString('base64') },
+      };
     },
     createPullRequest: (_v: any, a: any, ec: ExecCtx) => {
       const input = a.input ?? {};
@@ -744,7 +749,7 @@ const RESOLVERS: Record<string, Record<string, Resolver>> = {
     closedAt: (v: { rec: PullRecord }) => v.rec.closed_at,
     merged: (v: { rec: PullRecord }) => v.rec.merged,
     mergedAt: (v: { rec: PullRecord }) => v.rec.merged_at,
-    mergeable: (v: { rec: PullRecord }) => v.rec.mergeable,
+    mergeable: (v: { rec: PullRecord }) => (v.rec.mergeable ? 'MERGEABLE' : 'CONFLICTING'),
     headRefName: (v: { rec: PullRecord }) => v.rec.head.ref,
     baseRefName: (v: { rec: PullRecord }) => v.rec.base.ref,
     url: (v: { rec: PullRecord }) => v.rec.html_url,
@@ -1267,6 +1272,12 @@ const INTERFACE_SOURCE: Array<{ name: string; fields: Array<[string, string]>; p
 const ENUM_SOURCE: Array<{ name: string; values: string[] }> = [
   { name: 'IssueState', values: ['OPEN', 'CLOSED'] },
   { name: 'PullRequestState', values: ['OPEN', 'CLOSED', 'MERGED'] },
+  { name: 'SearchType', values: ['ISSUE', 'REPOSITORY', 'USER', 'DISCUSSION'] },
+  { name: 'IssueOrderField', values: ['CREATED_AT', 'UPDATED_AT', 'COMMENTS'] },
+  { name: 'OrderDirection', values: ['ASC', 'DESC'] },
+  { name: 'RepositoryPermission', values: ['ADMIN', 'MAINTAIN', 'WRITE', 'TRIAGE', 'READ'] },
+  { name: 'IssueStateReason', values: ['COMPLETED', 'NOT_PLANNED', 'REOPENED'] },
+  { name: 'SubscriptionState', values: ['SUBSCRIBED', 'UNSUBSCRIBED', 'IGNORED'] },
   { name: '__TypeKind', values: ['SCALAR', 'OBJECT', 'INTERFACE', 'UNION', 'ENUM', 'INPUT_OBJECT', 'LIST', 'NON_NULL'] },
 ];
 
@@ -1447,19 +1458,16 @@ function project(value: any, selection: Sel[], ec: ExecCtx, path: Array<string |
       // A mutation's own refusal is a result the caller reads; a field this forge does not serve is
       // answered as null with no error, so a document gh sends with an extra probe field still answers
       // the fields it asked for instead of failing the whole call.
+      // An unknown field on a root or a known type is reported like GitHub reports it: a null in the
+      // data and an errors entry naming the field. A mutation's own refusal is likewise a result.
       const message = messageOf(err);
-      const missingField = message.startsWith('Cannot query field');
-      if (missingField || MUTATION_ROOTS.has(String(path[0] ?? ''))) {
-        if (!missingField) {
-          ec.errors.push({
-            message,
-            locations: [{ line: field.line, column: field.col }],
-            path: [...path, key],
-          });
-        }
-        out[key] = null;
-        continue;
-      }
+      ec.errors.push({
+        message,
+        locations: [{ line: field.line, column: field.col }],
+        path: [...path, key],
+      });
+      out[key] = null;
+      continue;
       ec.errors.push({
         message,
         locations: [{ line: field.line, column: field.col }],
@@ -1539,7 +1547,18 @@ function handleGraphql(ctx: Ctx, fallback: Store): Reply {
   if (ctx.login === undefined) return [401, { message: 'Requires authentication' }];
 
   const body: any = ctx.body;
-  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+  // A batched request is an array of `{query, variables?, operationName?}`, answered by an array of the
+  // same per-operation replies, in order. GitHub serves it so a client can send two probes at once.
+  if (Array.isArray(body)) {
+    if (body.length === 0) return [200, []];
+    const replies = body.map((entry) => {
+      const nested = { ...ctx, body: entry } as Ctx;
+      const reply = handleGraphql(nested, fallback);
+      return reply[1];
+    });
+    return [200, replies];
+  }
+  if (typeof body !== 'object' || body === null) {
     return [200, { errors: [err('Problems parsing JSON')] }];
   }
   const source = typeof body.query === 'string' ? body.query : '';
