@@ -123,7 +123,25 @@ function headOid(store: Store, repo: RepoRecord): string | undefined {
  * The ref advertisement for one service, body only (the app adds the content type):
  * `# service=...`, a flush, then the service's own capability block.
  */
+/**
+ * The ref advertisement for one (repository, service), kept until the store changes. Fifty concurrent
+ * clones of one repository ask for the same bytes; building them fifty times is pure waste, and the
+ * key carries the store's write counter so a stale advertisement is never served.
+ */
+const advertiseCache = new Map<string, Buffer>();
+const lsRefsCache = new Map<string, Buffer>();
+
 export function advertiseRefs(store: Store, repo: RepoRecord | string, service: 'git-upload-pack' | 'git-receive-pack'): Buffer {
+  const cacheKey = `${typeof repo === 'string' ? repo : repo.full_name}|${service}|${store.writes}`;
+  const cached = advertiseCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+  const built = buildAdvertisement(store, repo, service);
+  if (advertiseCache.size > 256) advertiseCache.clear();
+  advertiseCache.set(cacheKey, built);
+  return built;
+}
+
+function buildAdvertisement(store: Store, repo: RepoRecord | string, service: 'git-upload-pack' | 'git-receive-pack'): Buffer {
   const record = typeof repo === 'string' ? store.getRepo(repo) : repo;
   if (record === undefined) throw new Error(`no such repo: ${String(repo)}`);
   const parts: Buffer[] = [];
@@ -486,6 +504,10 @@ export function handleUploadPack(store: Store, repo: RepoRecord | string, body: 
     const flags = new Set(request.slice(1).filter((line) => !line.includes(' ') || line.startsWith('ref-prefix ')));
 
     if (command === 'ls-refs') {
+      // Fifty concurrent clones ask for the same ref list on the same repository: build it once.
+      const lsKey = `${record.full_name}|ls|${store.writes}|${Buffer.from(body).toString('base64')}`;
+      const lsHit = lsRefsCache.get(lsKey);
+      if (lsHit !== undefined) return lsHit;
       const refs = refList(store, record);
       const unborn = store.getRef(record, `refs/heads/${record.default_branch}`) === undefined;
       const symref = `symref=HEAD:refs/heads/${record.default_branch}`;
@@ -519,7 +541,10 @@ export function handleUploadPack(store: Store, repo: RepoRecord | string, body: 
         parts.push(Buffer.from(pktLine(`${oid} ${ref}${attrs}\n`), 'utf8'));
       }
       parts.push(Buffer.from('0000', 'ascii'));
-      return Buffer.concat(parts);
+      const lsOut = Buffer.concat(parts);
+      if (lsRefsCache.size > 256) lsRefsCache.clear();
+      lsRefsCache.set(lsKey, lsOut);
+      return lsOut;
     }
 
     // fetch: the wants' closure, minus the haves' closure, as one pack in a side-band. A `deepen <n>`
