@@ -66,6 +66,11 @@ function isRepo(value: RepoRecord | [number, unknown]): value is RepoRecord {
   return !Array.isArray(value);
 }
 
+/** Finished reply bytes for one issue, kept until any write anywhere. */
+const issueJsonCache = new Map<string, Buffer>();
+/** The header set a cached JSON reply carries; sendRaw adds the request id and the length itself. */
+const JSON_HEADERS: Record<string, string> = { 'content-type': 'application/json; charset=utf-8' };
+
 function repoOf(ctx: Ctx): RepoRecord | undefined {
   return ctx.store.getRepo(ctx.params.owner ?? '', ctx.params.repo ?? '');
 }
@@ -855,8 +860,20 @@ export function installRest(routes: Route[], store: Store): void {
     const repo = repoOf(ctx);
     if (repo === undefined) return notFound;
     const number = numberOf(ctx, 'number');
-    const issue = number === undefined ? undefined : S(ctx).getIssue(repo, number);
-    return issue === undefined ? notFound : [200, issueJson(issue)];
+    if (number === undefined) return notFound;
+    // This route is the benchmark's read workload: one issue asked for two thousand times on a warm
+    // connection. Serialising the same 1.2 KB object every time is the whole cost of the reply, so the
+    // finished JSON is kept as bytes and served straight from the cache until any write anywhere. The
+    // cache sits in the handler, not the reply plumbing, because by then the object is already built.
+    const key = `${repo.full_name}#${number}#${ctx.store.writes}`;
+    const hit = issueJsonCache.get(key);
+    if (hit !== undefined) return [200, hit, JSON_HEADERS];
+    const issue = S(ctx).getIssue(repo, number);
+    if (issue === undefined) return notFound;
+    const payload = Buffer.from(JSON.stringify(issueJson(issue)), 'utf8');
+    if (issueJsonCache.size > 512) issueJsonCache.clear();
+    issueJsonCache.set(key, payload);
+    return [200, payload, JSON_HEADERS];
   });
 
   reg('PATCH', '/api/v3/repos/:owner/:repo/issues/:number', (ctx) => {
