@@ -59,13 +59,20 @@ const REPLAY_ID = process.env.MAKEFUN_REQUEST_ID ?? '';
 let requestSeq = 0;
 
 /** A deterministic per-process request id in GitHub's `aaaa:bbbb:cccc` shape. */
+/**
+ * A request id in GitHub's 32-hex-digit shape, without hashing: the counter's high half and its
+ * bitwise complement, then the counter again twice, is 32 characters and unique per process. A
+ * SHA-1 per request was measurable on the 2,000-read workload, and an id only has to look like one.
+ */
 function nextRequestId(): string {
   requestSeq += 1;
-  // A GitHub request id: 32 hex digits, and stable for a replay when the caller asks for one.
   if (REPLAY_ID !== '') return REPLAY_ID;
-  const hex = requestSeq.toString(16).padStart(8, '0').toUpperCase();
-  const tail = sha1(`req:${requestSeq}`).toUpperCase();
-  return `${hex}${tail}`.slice(0, 32);
+  const n = requestSeq >>> 0;
+  const a = n.toString(16).padStart(8, '0');
+  const b = (~n >>> 0).toString(16).padStart(8, '0');
+  const c = ((n * 2654435761) >>> 0).toString(16).padStart(8, '0');
+  const d = ((n ^ 0x9e3779b9) >>> 0).toString(16).padStart(8, '0');
+  return (a + b + c + d).toUpperCase();
 }
 
 /** Send one JSON reply: the three headers every JSON answer must carry, and the exact byte length. */
@@ -171,11 +178,18 @@ function reindex(): void {
   indexedCount = routes.length;
 }
 
-/** Every bucket a (method, first segment) can land in: its own, plus the parameterised wildcard one. */
-function lookupBuckets(method: string, segments: string[]): IndexedRoute[] {
+/**
+ * Every bucket a (method, first segment) can land in: its own, then the parameterised wildcard one.
+ * The two lists are walked in order without being copied — the 2,000-read workload allocates an
+ * array per request otherwise, and this is the hot path of every reply.
+ */
+function lookupBuckets(method: string, segments: string[], visit: (route: IndexedRoute) => boolean): void {
   if (indexedCount !== routes.length) reindex();
   const first = segments[0] ?? '';
-  return [...(routeIndex.get(`${method}\u0000${first}`) ?? []), ...(routeIndex.get(`${method}\u0000*`) ?? [])];
+  for (const bucket of [routeIndex.get(`${method}\u0000${first}`), routeIndex.get(`${method}\u0000*`)]) {
+    if (bucket === undefined) continue;
+    for (const route of bucket) if (visit(route)) return;
+  }
 }
 
 /** The routes every other step extends. Order matters: the first match wins. */
@@ -278,28 +292,34 @@ async function handle(req: IncomingMessage, res: ServerResponse, store: Store): 
   // HEAD is GET without the body; sendJson/sendRaw already drop it for HEAD requests.
   const lookup = method === 'HEAD' ? 'GET' : method;
   const partSegments = splitPath(path);
-  for (const candidate of lookupBuckets(lookup, partSegments)) {
+  let matched: IndexedRoute | null = null;
+  lookupBuckets(lookup, partSegments, (candidate) => {
     const params = matchSegments(candidate.want, partSegments);
-    if (params === null) continue;
+    if (params === null) return false;
+    matched = candidate;
     ctx.params = params;
-    let reply: Reply;
-    try {
-      reply = await candidate.handler(ctx);
-    } catch (err) {
-      // A handler that throws is one bad request, not a dead process: answer 500 {message} on the
-      // socket that is still open, so the next request finds the forge alive.
-      const message = err instanceof Error ? err.message : String(err);
-      if (ctx.res.headersSent) ctx.res.end();
-      else sendJson(ctx, 500, { message });
-      return;
-    }
-    const [status, body, extra] = reply;
-    if (Buffer.isBuffer(body)) sendRaw(ctx, status, body, extra);
-    else sendJson(ctx, status, body, extra);
+    return true;
+  });
+
+  if (matched === null) {
+    sendJson(ctx, 404, notFound()[1]);
     return;
   }
 
-  sendJson(ctx, 404, notFound()[1]);
+  let reply: Reply;
+  try {
+    reply = await matched.handler(ctx);
+  } catch (err) {
+    // A handler that throws is one bad request, not a dead process: answer 500 {message} on the
+    // socket that is still open, so the next request finds the forge alive.
+    const message = err instanceof Error ? err.message : String(err);
+    if (ctx.res.headersSent) ctx.res.end();
+    else sendJson(ctx, 500, { message });
+    return;
+  }
+  const [status, body, extra] = reply;
+  if (Buffer.isBuffer(body)) sendRaw(ctx, status, body, extra);
+  else sendJson(ctx, status, body, extra);
 }
 
 /** One header value, flattened. */
