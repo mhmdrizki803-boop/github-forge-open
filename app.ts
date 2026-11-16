@@ -225,6 +225,8 @@ function readBody(req: IncomingMessage): Promise<Buffer> {
 
 const PUBLIC_PATHS = new Set(['/healthz', '/api/v3', '/api/v3/', '/api/v3/meta']);
 const BODY_METHODS = new Set(['POST', 'PATCH', 'PUT', 'DELETE']);
+/** A request with no query string shares this empty one: no alloc, and it is only ever read. */
+const EMPTY_QUERY = new URLSearchParams();
 
 /** createApp(): the server main.ts imports. Routes are registered here, at call time. */
 export function createApp(): Server {
@@ -237,7 +239,12 @@ export function createApp(): Server {
 
 async function handle(req: IncomingMessage, res: ServerResponse, store: Store): Promise<void> {
   const method = (req.method ?? 'GET').toUpperCase();
-  const url = new URL(req.url ?? '/', 'http://placeholder');
+  // The target is split by hand instead of through new URL(): the path stays byte-for-byte what
+  // url.pathname was (no decoding), and a query-less request allocates nothing at all.
+  const raw = req.url ?? '/';
+  const q = raw.indexOf('?');
+  const path = q === -1 ? raw : raw.slice(0, q);
+  const query = q === -1 ? EMPTY_QUERY : new URLSearchParams(raw.slice(q + 1));
   const ctx: Ctx = {
     req,
     res,
@@ -245,8 +252,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, store: Store): 
     host: String(req.headers.host ?? 'localhost:8080'),
     proto: protoOf(req.headers),
     method,
-    path: url.pathname,
-    query: url.searchParams,
+    path,
+    query,
     params: {},
     headers: req.headers,
     login: undefined,
@@ -258,12 +265,16 @@ async function handle(req: IncomingMessage, res: ServerResponse, store: Store): 
     viewer: false,
   };
 
-  try {
-    ctx.raw = await readBody(req);
-  } catch {
-    sendJson(ctx, 400, { message: 'Problems parsing JSON' });
-    flush(ctx, res);
-    return;
+  // Only a body-bearing method has bytes to read; GET/HEAD/OPTIONS keep the empty Buffer already on
+  // the context, with no Promise, no await and no listeners on the request.
+  if (BODY_METHODS.has(method)) {
+    try {
+      ctx.raw = await readBody(req);
+    } catch {
+      sendJson(ctx, 400, { message: 'Problems parsing JSON' });
+      flush(ctx, res);
+      return;
+    }
   }
 
   await dispatch(ctx);
