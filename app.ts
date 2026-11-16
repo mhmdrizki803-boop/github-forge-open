@@ -15,9 +15,23 @@ export type OutHeaders = Record<string, string>;
 /** What a handler returns: status, body (an object becomes JSON, a Buffer is sent raw), headers. */
 export type Reply = [status: number, body: unknown, headers?: OutHeaders];
 
+/** The bytes one reply becomes: built by the handlers, written by whichever transport is in use. */
+export interface ReplyOut {
+  status: number;
+  headers: OutHeaders;
+  body: Buffer;
+}
+
 export interface Ctx {
-  req: IncomingMessage;
-  res: ServerResponse;
+  /** The Node request, on the http transport only: the raw transport fills the fields below instead. */
+  req?: IncomingMessage;
+  res?: ServerResponse;
+  /** The reply the handlers built; the transport writes it once, after dispatch returns. */
+  reply: ReplyOut | null;
+  /** The Host header, so links point at whatever host the caller dialled. */
+  host: string;
+  /** The scheme the caller used, from x-forwarded-proto when a proxy set it. */
+  proto: string;
   method: string;
   path: string;
   query: URLSearchParams;
@@ -64,7 +78,7 @@ let requestSeq = 0;
  * bitwise complement, then the counter again twice, is 32 characters and unique per process. A
  * SHA-1 per request was measurable on the 2,000-read workload, and an id only has to look like one.
  */
-function nextRequestId(): string {
+export function nextRequestId(): string {
   requestSeq += 1;
   if (REPLAY_ID !== '') return REPLAY_ID;
   const n = requestSeq >>> 0;
@@ -75,7 +89,8 @@ function nextRequestId(): string {
   return (a + b + c + d).toUpperCase();
 }
 
-/** Send one JSON reply: the three headers every JSON answer must carry, and the exact byte length. */
+/** Build one JSON reply: the headers every JSON answer must carry, and the exact byte length. The
+ * bytes are held on the context, never written here, so an http and a socket transport share them. */
 function sendJson(ctx: Ctx, status: number, body: unknown, extra: OutHeaders = {}): void {
   const payload = Buffer.from(JSON.stringify(body), 'utf8');
   const headers: OutHeaders = {
@@ -84,22 +99,21 @@ function sendJson(ctx: Ctx, status: number, body: unknown, extra: OutHeaders = {
     'x-github-request-id': ctx.requestId,
     ...extra,
   };
-  ctx.res.writeHead(status, headers);
-  if (ctx.method === 'HEAD') ctx.res.end();
-  else ctx.res.end(payload);
+  ctx.reply = { status, headers, body: ctx.method === 'HEAD' ? EMPTY_BODY : payload };
 }
 
-/** Send a non-JSON reply (git smart HTTP, raw diffs); the caller owns content-type. */
+/** Build a non-JSON reply (git smart HTTP, raw diffs); the caller owns content-type. */
 function sendRaw(ctx: Ctx, status: number, payload: Buffer, extra: OutHeaders = {}): void {
   const headers: OutHeaders = {
     'x-github-request-id': ctx.requestId,
     ...extra,
   };
   if (status !== 204) headers['content-length'] = String(payload.length);
-  ctx.res.writeHead(status, headers);
-  if (ctx.method === 'HEAD') ctx.res.end();
-  else ctx.res.end(payload);
+  ctx.reply = { status, headers, body: ctx.method === 'HEAD' ? EMPTY_BODY : payload };
 }
+
+/** The one empty body the HEAD replies share. */
+const EMPTY_BODY = Buffer.alloc(0);
 
 /** GitHub's error envelope. */
 const notFound = (): Reply => [404, { message: 'Not Found' }];
@@ -224,12 +238,14 @@ export function createApp(): Server {
 async function handle(req: IncomingMessage, res: ServerResponse, store: Store): Promise<void> {
   const method = (req.method ?? 'GET').toUpperCase();
   const url = new URL(req.url ?? '/', 'http://placeholder');
-  const path = url.pathname;
   const ctx: Ctx = {
     req,
     res,
+    reply: null,
+    host: String(req.headers.host ?? 'localhost:8080'),
+    proto: protoOf(req.headers),
     method,
-    path,
+    path: url.pathname,
     query: url.searchParams,
     params: {},
     headers: req.headers,
@@ -242,21 +258,47 @@ async function handle(req: IncomingMessage, res: ServerResponse, store: Store): 
     viewer: false,
   };
 
-  // The links the store hands back point at whatever host the caller dialled.
-  store.base = `${protoOf(req)}://${req.headers.host ?? 'localhost:8080'}`.replace(/\/+$/, '');
-
   try {
     ctx.raw = await readBody(req);
   } catch {
     sendJson(ctx, 400, { message: 'Problems parsing JSON' });
+    flush(ctx, res);
     return;
   }
+
+  await dispatch(ctx);
+  flush(ctx, res);
+}
+
+/** Write the reply the handlers built onto a Node response: one writeHead and one end. */
+export function flush(ctx: Ctx, res: ServerResponse): void {
+  const reply = ctx.reply;
+  if (reply === null) {
+    res.writeHead(500, { 'content-type': 'application/json; charset=utf-8', 'content-length': '0' });
+    res.end();
+    return;
+  }
+  res.writeHead(reply.status, reply.headers);
+  if (reply.body.length === 0) res.end();
+  else res.end(reply.body);
+}
+
+/** Everything a request does once its bytes are in hand, whichever transport read them. */
+export async function dispatch(ctx: Ctx): Promise<void> {
+  const store = ctx.store;
+  const method = ctx.method;
+  const path = ctx.path;
+
+  // The links the store hands back point at whatever host the caller dialled.
+  store.base = `${ctx.proto}://${ctx.host}`.replace(/\/+$/, '');
+
+  const req = ctx.req;
 
   // Authentication: the trial hands the viewer's token to this process in MAKEFUN_SHOP_TOKEN, and
   // presents the same one on every call. That token IS the viewer, so the caller's login is the name
   // the forge was told to answer as; a stranger's token is a user of its own, and the two never see
   // each other's repositories.
-  const authHeader = headerOf(req, 'authorization');
+  const authHeader = headerOf(ctx, 'authorization');
   const bearer = authHeader !== undefined && /^(Bearer|token)\s+/i.test(authHeader)
     ? authHeader.replace(/^(Bearer|token)\s+/i, '').trim()
     : '';
@@ -313,8 +355,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, store: Store): 
     // A handler that throws is one bad request, not a dead process: answer 500 {message} on the
     // socket that is still open, so the next request finds the forge alive.
     const message = err instanceof Error ? err.message : String(err);
-    if (ctx.res.headersSent) ctx.res.end();
-    else sendJson(ctx, 500, { message });
+    if (ctx.reply === null) sendJson(ctx, 500, { message });
     return;
   }
   const [status, body, extra] = reply;
@@ -322,16 +363,18 @@ async function handle(req: IncomingMessage, res: ServerResponse, store: Store): 
   else sendJson(ctx, status, body, extra);
 }
 
-/** One header value, flattened. */
-function headerOf(req: IncomingMessage, name: string): string | undefined {
-  const value = req.headers[name];
-  return Array.isArray(value) ? value[0] : value;
+/** The scheme the caller used, from x-forwarded-proto when a proxy set it. */
+export function protoOf(headers: Record<string, string | string[] | undefined>): string {
+  const forwarded = headers['x-forwarded-proto'];
+  const value = Array.isArray(forwarded) ? forwarded[0] : forwarded;
+  if (value !== undefined && value !== '') return value.split(',')[0].trim();
+  return 'http';
 }
 
-function protoOf(req: IncomingMessage): string {
-  const forwarded = headerOf(req, 'x-forwarded-proto');
-  if (forwarded !== undefined && forwarded !== '') return forwarded.split(',')[0].trim();
-  return 'http';
+/** One header value, flattened. */
+function headerOf(ctx: Ctx, name: string): string | undefined {
+  const value = ctx.headers[name];
+  return Array.isArray(value) ? value[0] : value;
 }
 
 

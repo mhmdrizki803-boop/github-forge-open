@@ -3,7 +3,8 @@
 // to say the suite is finished, then shut down. Nothing here binds 8080 — that port is the env's.
 
 import { createApp } from './app.ts';
-import type { Server } from 'node:http';
+import { createRawApp } from './nethttp.ts';
+import type { Server } from 'node:net';
 import type { AddressInfo } from 'node:net';
 
 /** Every call to the env is bounded, so a wedged control plane cannot wedge this process. */
@@ -149,16 +150,25 @@ async function waitForDone(base: string): Promise<void> {
   }
 }
 
-/** Close the listener without waiting on a keep-alive socket the env may still be holding. */
+/**
+ * Close the listener without waiting on a keep-alive socket the env may still be holding. The raw
+ * transport carries the same closeAllConnections hook the http server does.
+ */
 function close(server: Server): Promise<void> {
   return new Promise((resolve) => {
     server.close(() => resolve());
-    server.closeAllConnections();
+    const drop = (server as unknown as { closeAllConnections?: () => void }).closeAllConnections;
+    if (drop !== undefined) drop.call(server);
   });
 }
 
 const base = envBase();
-const server = createApp();
+// The raw front end is the default: it answers the same bytes with less per-request machinery.
+// FORGE_TRANSPORT=http keeps the Node http server for an A/B run.
+const server: Server =
+  (process.env.FORGE_TRANSPORT ?? 'raw') === 'http'
+    ? (createApp() as unknown as Server)
+    : createRawApp();
 
 let port: number;
 try {
