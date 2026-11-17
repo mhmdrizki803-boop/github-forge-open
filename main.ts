@@ -1,3 +1,11 @@
+/*
+ * main.ts owns the TypeScript entry point for launching the forge executable.
+ * It resolves the sibling binary relative to this module rather than the caller.
+ * The child inherits the current environment, working directory, and stdio streams.
+ * Termination signals are forwarded so supervised shutdown remains predictable.
+ * Child startup failures and exit status are reflected by this process.
+ */
+
 import { spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';

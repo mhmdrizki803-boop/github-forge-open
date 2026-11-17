@@ -1,6 +1,10 @@
-// tests.ts — the forge's own self-check. Starts createApp() on port 0 and talks to it over fetch
-// only: nothing here imports the store, so every answer below crossed the wire the way the graded
-// suite's does. One line per check, then the tally, then the exit code.
+/*
+ * tests.ts owns the forge's end-to-end self-check suite.
+ * It starts createApp on an ephemeral port and communicates only through fetch.
+ * Store internals are deliberately not imported, so every assertion crosses HTTP.
+ * Checks cover REST resources, Git-backed contents, GraphQL, and MCP behavior.
+ * The script prints each result, a final tally, and a matching process exit code.
+ */
 
 import { createApp } from './app.ts';
 

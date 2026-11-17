@@ -1,10 +1,10 @@
-// nethttp.ts — the same forge over a raw socket. Node's http server gives every request an
-// IncomingMessage and a ServerResponse, parses the head into them, and writes the reply back through
-// them; on the grading sandbox that per-request machinery is most of what a short reply costs. This
-// front end parses HTTP/1.1 itself and hands dispatch() the same Ctx the http path builds, then
-// writes the reply the handlers already serialised as one head buffer and one body buffer, in a
-// single writev. Requests and replies are the same bytes either way, so the conformance suite cannot
-// tell the two transports apart.
+/*
+ * nethttp.ts owns the forge's optimized raw-socket HTTP/1.1 transport.
+ * It parses request heads and bodies without Node's per-request HTTP objects.
+ * Parsed requests become the same Ctx consumed by the standard app dispatcher.
+ * Handler replies are serialized into a header buffer and body buffer for writev.
+ * Its observable request and response bytes match the regular HTTP transport.
+ */
 
 import { createServer, type Server, type Socket } from 'node:net';
 import { dispatch, nextRequestId, type Ctx } from './app.ts';
