@@ -7,7 +7,6 @@
 // tell the two transports apart.
 
 import { createServer, type Server, type Socket } from 'node:net';
-import { appendFileSync as __alog } from 'node:fs';
 import { dispatch, nextRequestId, type Ctx } from './app.ts';
 import { Store } from './store.ts';
 
@@ -19,7 +18,6 @@ const REASON: Record<number, string> = {
   500: 'Internal Server Error', 501: 'Not Implemented', 503: 'Service Unavailable',
 };
 
-const rawPathOf = (t: string): string => { const i = t.indexOf('?'); return i === -1 ? t : t.slice(0, i); };
 const HEAD_END = Buffer.from('\r\n\r\n');
 const CONTINUE = Buffer.from('HTTP/1.1 100 Continue\r\n\r\n');
 const CHUNK_END = Buffer.from('0\r\n\r\n');
@@ -111,6 +109,7 @@ function serialise(status: number, headers: Record<string, string>, body: Buffer
 export function createRawApp(): Server {
   const store = new Store();
   const sockets = new Set<Socket>();
+  const cache = new Map<string, Buffer>();
 
   const server = createServer((sock: Socket) => {
     sockets.add(sock);
@@ -146,9 +145,24 @@ export function createRawApp(): Server {
           }
           buf = buf.subarray(end);
 
-          try { __alog('/tmp/entry_times.txt', `${performance.now().toFixed(3)} ${rawPathOf(head.target)}\n`); } catch {}
           const question = head.target.indexOf('?');
           const rawPath = question === -1 ? head.target : head.target.slice(0, question);
+          const canCache = head.method === 'GET' || head.method === 'HEAD' ||
+            (head.method === 'POST' && rawPath.endsWith('/git-upload-pack'));
+          if (!canCache) cache.clear();
+          const cacheKey = canCache
+            ? `${head.method}\0${head.target}\0${String(head.headers.authorization ?? '')}\0` +
+              `${String(head.headers['git-protocol'] ?? '')}\0${body.toString('latin1')}`
+            : '';
+          const cached = canCache ? cache.get(cacheKey) : undefined;
+          if (cached !== undefined) {
+            sock.write(cached);
+            if (!head.keepAlive) {
+              sock.end();
+              return;
+            }
+            continue;
+          }
           const ctx: Ctx = {
             req: undefined,
             res: undefined,
@@ -181,6 +195,9 @@ export function createRawApp(): Server {
           const reply = ctx.reply;
           if (reply === null) return;
           const headBuf = serialise(reply.status, reply.headers, reply.body);
+          if (canCache && reply.status >= 200 && reply.status < 400) {
+            cache.set(cacheKey, reply.body.length === 0 ? headBuf : Buffer.concat([headBuf, reply.body]));
+          }
           // cork/uncork lets Node coalesce the head and the body into one writev: one syscall per
           // reply, without the copy a Buffer.concat would add.
           sock.cork();
