@@ -1,3 +1,9 @@
+/*
+ * Owns GraphQL tokenization, parsing, execution, schema metadata, and route setup.
+ * The shared HTTP application calls its installed handler for GraphQL API requests.
+ * Resolvers call the common Store so GraphQL and REST expose consistent records.
+ */
+
 // graphql.ts — the GraphQL v4 surface of the forge. One hand-written lexer, one recursive-descent
 // parser and one executor; no library and no codegen. A document arrives as JSON, its tokens are read
 // here, and every field resolves against the same Store the REST routes use, so ids, numbers and

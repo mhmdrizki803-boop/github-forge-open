@@ -1,3 +1,9 @@
+/*
+ * Owns deterministic in-memory persistence and public JSON record shapes.
+ * HTTP, REST, GraphQL, MCP, and Git protocol modules call this shared data layer.
+ * Application instances construct Store objects to isolate their users and repositories.
+ */
+
 // store.ts — the entire persistence layer of the forge: in memory, deterministic, no clock and no
 // randomness. Every id comes from a counter, every timestamp is EPOCH, so replaying the same request
 // stream produces byte-identical answers. Git objects live here the way git itself stores them:
@@ -26,13 +32,16 @@ function nodeId(kind: string, id: number | string): string {
   return Buffer.from(`${kind}${id}`, 'utf8').toString('base64');
 }
 
+/** The object kinds persisted in Git repositories. */
 export type GitObjectType = 'blob' | 'tree' | 'commit' | 'tag';
 
+/** A stored Git object with its type and uncompressed body. */
 export interface GitObject {
   type: GitObjectType;
   body: Buffer;
 }
 
+/** A forge user and the stable API metadata derived for that login. */
 export interface UserRecord {
   login: string;
   id: number;
@@ -46,6 +55,7 @@ export interface UserRecord {
   url: string;
 }
 
+/** A repository issue label and its API metadata. */
 export interface LabelRecord {
   id: number;
   node_id: string;
@@ -56,6 +66,7 @@ export interface LabelRecord {
   url: string;
 }
 
+/** A repository issue and its mutable lifecycle fields. */
 export interface IssueRecord {
   id: number;
   node_id: string;
@@ -84,6 +95,7 @@ export interface IssueRecord {
   timeline_url: string;
 }
 
+/** A repository pull request and its merge state. */
 export interface PullRecord {
   id: number;
   node_id: string;
@@ -125,6 +137,7 @@ export interface PullRecord {
   repository_url: string;
 }
 
+/** An issue comment and its author and API metadata. */
 export interface CommentRecord {
   id: number;
   node_id: string;
@@ -153,6 +166,7 @@ export interface RepoData {
   bytes: number;
 }
 
+/** A repository's public metadata paired with its private data buckets. */
 export interface RepoRecord {
   id: number;
   node_id: string;
@@ -199,6 +213,7 @@ export interface RepoRecord {
   data: RepoData;
 }
 
+/** Optional repository fields accepted when creating a record. */
 export interface RepoOptions {
   description?: string | null;
   private?: boolean;
@@ -740,6 +755,7 @@ function hostOf(base: string): string {
 
 // ---------------------------------------------------------------- JSON shapes
 
+/** Convert a user record to its public REST response shape. */
 export function userJson(user: UserRecord): Record<string, unknown> {
   return {
     login: user.login,
@@ -756,6 +772,7 @@ export function userJson(user: UserRecord): Record<string, unknown> {
   };
 }
 
+/** Convert a repository record to its public REST response shape. */
 export function repoJson(repo: RepoRecord): Record<string, unknown> {
   return {
     id: repo.id,
@@ -799,6 +816,7 @@ export function repoJson(repo: RepoRecord): Record<string, unknown> {
   };
 }
 
+/** Convert a label record to its public REST response shape. */
 export function labelJson(label: LabelRecord): Record<string, unknown> {
   return {
     id: label.id,
@@ -811,6 +829,7 @@ export function labelJson(label: LabelRecord): Record<string, unknown> {
   };
 }
 
+/** Convert an issue record to its public REST response shape. */
 export function issueJson(issue: IssueRecord): Record<string, unknown> {
   return {
     id: issue.id,
@@ -842,6 +861,7 @@ export function issueJson(issue: IssueRecord): Record<string, unknown> {
   };
 }
 
+/** Convert a pull request record to its public REST response shape. */
 export function pullJson(pull: PullRecord): Record<string, unknown> {
   return {
     id: pull.id,
@@ -885,6 +905,7 @@ export function pullJson(pull: PullRecord): Record<string, unknown> {
   };
 }
 
+/** Convert a comment record to its public REST response shape. */
 export function commentJson(comment: CommentRecord): Record<string, unknown> {
   return {
     id: comment.id,

@@ -1,3 +1,9 @@
+/*
+ * Owns Git smart-HTTP framing, advertisements, pack encoding, and pack decoding.
+ * The application Git routes call it for clone, fetch, and push requests.
+ * Store-backed helpers also call it to exchange canonical Git objects and refs.
+ */
+
 // gitproto.ts — the git smart-HTTP transport, implemented in this repository's own code. No git
 // binary, no pack library: pkt-lines, the v2 upload-pack handshake, the v0 receive-pack handshake,
 // and a packfile writer/reader that inflates and deflates every record itself. Object ids are
@@ -33,8 +39,10 @@ export function pktLineBuf(payload: Buffer): Buffer {
   return Buffer.concat([head, payload]);
 }
 
+/** The three pkt-line frame kinds understood by the protocol parser. */
 export type PktKind = 'data' | 'flush' | 'delim';
 
+/** A parsed pkt-line frame and its uninterpreted payload bytes. */
 export interface Pkt {
   kind: PktKind;
   data: Buffer;
@@ -131,6 +139,7 @@ function headOid(store: Store, repo: RepoRecord): string | undefined {
 const advertiseCache = new Map<string, Buffer>();
 const lsRefsCache = new Map<string, Buffer>();
 
+/** Build the smart-HTTP ref advertisement for an upload-pack or receive-pack service. */
 export function advertiseRefs(store: Store, repo: RepoRecord | string, service: 'git-upload-pack' | 'git-receive-pack'): Buffer {
   const cacheKey = `${typeof repo === 'string' ? repo : repo.full_name}|${service}|${store.writes}`;
   const cached = advertiseCache.get(cacheKey);
@@ -274,6 +283,7 @@ function packFor(store: Store, repo: RepoRecord, wants: string[], haves: string[
   return pack;
 }
 
+/** Encode a collection of complete Git objects as a checksummed packfile. */
 export function writePack(objects: Array<[string, { type: GitObjectType; body: Buffer }]> | Array<{ type: GitObjectType; body: Buffer }>): Buffer {
   const list = objects.map((entry) => (Array.isArray(entry) ? entry[1] : entry));
   const header = Buffer.alloc(12);
@@ -295,6 +305,7 @@ export function verifyPackChecksum(buf: Buffer): boolean {
 
 // ---------------------------------------------------------------- packs: reading
 
+/** One fully resolved object read from a Git packfile. */
 export interface PackRecord {
   type: GitObjectType;
   body: Buffer;
@@ -473,6 +484,7 @@ export function readPack(buf: Buffer): PackRecord[] {
 
 // ---------------------------------------------------------------- upload-pack
 
+/** The advertised refs and pack bytes produced for an upload-pack exchange. */
 export interface UploadPackResult {
   body: Buffer;
   /** Objects actually sent, for logging and for the caller's own bookkeeping. */

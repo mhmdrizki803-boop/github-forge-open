@@ -4,7 +4,10 @@
  * The child inherits the current environment, working directory, and stdio streams.
  * Termination signals are forwarded so supervised shutdown remains predictable.
  * Child startup failures and exit status are reflected by this process.
+ * Shell users and process supervisors invoke this module to run the forge.
  */
+
+// Shell users and process supervisors invoke this entry point to run the forge.
 
 import { spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';

@@ -4,7 +4,10 @@
  * Store internals are deliberately not imported, so every assertion crosses HTTP.
  * Checks cover REST resources, Git-backed contents, GraphQL, and MCP behavior.
  * The script prints each result, a final tally, and a matching process exit code.
+ * Developers and CI invoke this module to verify all public HTTP surfaces.
  */
+
+// Developers and CI invoke this script to verify the public HTTP surfaces together.
 
 import { createApp } from './app.ts';
 

@@ -1,3 +1,9 @@
+/*
+ * Owns the standalone raw-HTTP backend process and its shutdown lifecycle.
+ * The forge launcher starts this module with the listening port as an argument.
+ * Process supervisors call its signal handlers to stop active connections cleanly.
+ */
+
 import { createRawApp } from './nethttp.ts';
 
 const port = Number.parseInt(process.argv[2] ?? '', 10);

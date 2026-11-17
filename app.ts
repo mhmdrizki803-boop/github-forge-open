@@ -1,3 +1,9 @@
+/*
+ * Owns the shared HTTP application, routing, request context, and reply plumbing.
+ * The standard server and raw-socket transport both dispatch requests through this module.
+ * REST, GraphQL, MCP, and Git protocol installers register their handlers here.
+ */
+
 // app.ts — the forge's HTTP surface. One node:http server, one router table, one Store. No dependency
 // beyond node built-ins and store.ts: the git protocol, the REST v3 API, GraphQL and MCP all hang off
 // the same router, so every feature shares this request pipeline (ids, lengths, auth, JSON) exactly.
@@ -22,6 +28,7 @@ export interface ReplyOut {
   body: Buffer;
 }
 
+/** Shared request state passed by the HTTP transports to every route handler. */
 export interface Ctx {
   /** The Node request, on the http transport only: the raw transport fills the fields below instead. */
   req?: IncomingMessage;
@@ -50,8 +57,10 @@ export interface Ctx {
   requestId: string;
 }
 
+/** A route callback that returns a reply immediately or asynchronously. */
 export type Handler = (ctx: Ctx) => Reply | Promise<Reply>;
 
+/** One method and path pattern paired with its request handler. */
 export interface Route {
   method: string;
   pattern: string;

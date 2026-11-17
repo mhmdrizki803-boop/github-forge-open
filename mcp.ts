@@ -1,3 +1,9 @@
+/*
+ * Owns the forge's MCP JSON-RPC dispatch, tool catalogue, and HTTP route setup.
+ * The shared application invokes it for clients posting MCP requests and batches.
+ * Tool handlers call the common Store used by the REST and GraphQL surfaces.
+ */
+
 // mcp.ts — the Model Context Protocol endpoint of the forge. JSON-RPC 2.0 over plain HTTP, no session
 // and no SSE: every POST carries one request (or a batch), and the answer is one JSON body. The six
 // tools are thin, honest wrappers over the same Store the REST v3 routes write: an issue created here

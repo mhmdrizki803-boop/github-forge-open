@@ -4,7 +4,10 @@
  * Parsed requests become the same Ctx consumed by the standard app dispatcher.
  * Handler replies are serialized into a header buffer and body buffer for writev.
  * Its observable request and response bytes match the regular HTTP transport.
+ * backend.ts calls this module when the standalone raw server starts.
  */
+
+// backend.ts calls this transport when the standalone raw server starts.
 
 import { createServer, type Server, type Socket } from 'node:net';
 import { dispatch, nextRequestId, type Ctx } from './app.ts';
