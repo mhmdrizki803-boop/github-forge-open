@@ -1,13 +1,7 @@
 /*
- * Owns GitHub-compatible REST routes and their repository resource transformations.
- * The shared application calls its installer while constructing the route table.
- * Registered handlers call the common Store for repositories, Git data, issues, and pulls.
+ * GitHub-compatible REST v3 routes for repositories, refs, commits, contents,
+ * labels, issues, comments, and pull requests, all backed by the shared Store.
  */
-
-// rest.ts — the GitHub REST v3 surface of the forge. Repositories, branches, git refs, commits,
-// contents (read and written as real blob/tree/commit objects), labels, issues, comments and pulls.
-// Every answer is the v3 JSON shape field for field, built from store.ts alone: no filesystem, no
-// clock, no randomness, so the same request stream replays byte for byte.
 
 import {
   EPOCH,

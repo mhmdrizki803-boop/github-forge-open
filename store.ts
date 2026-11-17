@@ -1,13 +1,7 @@
 /*
- * Owns deterministic in-memory persistence and public JSON record shapes.
- * HTTP, REST, GraphQL, MCP, and Git protocol modules call this shared data layer.
- * Application instances construct Store objects to isolate their users and repositories.
+ * Deterministic in-memory persistence for every forge API. IDs come from counters,
+ * timestamps use EPOCH, and Git objects retain their canonical uncompressed bodies.
  */
-
-// store.ts — the entire persistence layer of the forge: in memory, deterministic, no clock and no
-// randomness. Every id comes from a counter, every timestamp is EPOCH, so replaying the same request
-// stream produces byte-identical answers. Git objects live here the way git itself stores them:
-// keyed by sha1("type len\0" + body), which is what the smart-HTTP layer will read and write later.
 
 import { createHash } from 'node:crypto';
 

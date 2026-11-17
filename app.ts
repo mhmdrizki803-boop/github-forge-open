@@ -1,12 +1,7 @@
 /*
- * Owns the shared HTTP application, routing, request context, and reply plumbing.
- * The standard server and raw-socket transport both dispatch requests through this module.
- * REST, GraphQL, MCP, and Git protocol installers register their handlers here.
+ * Shared HTTP application and router. Both transports dispatch through this module,
+ * giving REST, GraphQL, MCP, and Git one authentication and response pipeline.
  */
-
-// app.ts — the forge's HTTP surface. One node:http server, one router table, one Store. No dependency
-// beyond node built-ins and store.ts: the git protocol, the REST v3 API, GraphQL and MCP all hang off
-// the same router, so every feature shares this request pipeline (ids, lengths, auth, JSON) exactly.
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { Store, sha1, userJson, repoJson, type RepoRecord, type UserRecord } from './store.ts';

@@ -1,13 +1,7 @@
 /*
- * Owns Git smart-HTTP framing, advertisements, pack encoding, and pack decoding.
- * The application Git routes call it for clone, fetch, and push requests.
- * Store-backed helpers also call it to exchange canonical Git objects and refs.
+ * Git smart-HTTP protocol support: pkt-lines, service advertisements, upload and
+ * receive negotiation, plus native packfile encoding and decoding.
  */
-
-// gitproto.ts — the git smart-HTTP transport, implemented in this repository's own code. No git
-// binary, no pack library: pkt-lines, the v2 upload-pack handshake, the v0 receive-pack handshake,
-// and a packfile writer/reader that inflates and deflates every record itself. Object ids are
-// recomputed from content, so a client that hashes what it receives agrees with this forge.
 
 import { createHash } from 'node:crypto';
 import { deflateSync, inflateSync } from 'node:zlib';
